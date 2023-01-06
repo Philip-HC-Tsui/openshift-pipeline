@@ -1,0 +1,121 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: git-mvn-s2i
+spec:
+  params:
+    - default: 'https://github.com/Philip-HC-Tsui/spring-petclinic.git'
+      description: The application git repository
+      name: APP_SOURCE_GIT
+      type: string
+    - default: master
+      description: The application git revision
+      name: APP_SOURCE_REVISION
+      type: string
+    - default: >-
+        image-registry.openshift-image-registry.svc:5000/demo-dev/spring-petclinic
+      description: The application image to build
+      name: APP_IMAGE
+      type: string
+    - default: latest
+      description: The application image tag to build
+      name: APP_IMAGE_TAG
+      type: string
+    - default: 'http://nexus.apps-crc.testing/repository/maven-public/'
+      name: MAVEN_MIRROR_URL
+      type: string
+    - default: source
+      description: Where to checkout the source relative to the workspace
+      name: CONTEXT_DIR
+      type: string
+  tasks:
+    - name: source-clone
+      params:
+        - name: url
+          value: $(params.APP_SOURCE_GIT)
+        - name: subdirectory
+          value: $(params.CONTEXT_DIR)
+      taskRef:
+        kind: Task
+        name: git-clone
+      workspaces:
+        - name: output
+          workspace: workspace
+        - name: ssh-directory
+          workspace: git-credentials          
+    - name: mvn-package
+      params:
+        - name: MAVEN_MIRROR_URL
+          value: $(params.MAVEN_MIRROR_URL)
+        - name: GOALS
+          value:
+            - package
+            - '-DskipTests'
+            - '-Dcheckstyle.skip'
+        - name: CONTEXT_DIR
+          value: $(params.CONTEXT_DIR)
+      runAfter:
+        - source-clone
+      taskRef:
+        kind: Task
+        name: maven
+      workspaces:
+        - name: source
+          workspace: workspace
+        - name: maven-settings
+          workspace: maven-settings
+    - name: mvn-deploy
+      params:
+        - name: MAVEN_MIRROR_URL
+          value: $(params.MAVEN_MIRROR_URL)
+        - name: GOALS
+          value:
+            - deploy
+            - '-DskipTests'
+            - '-Dcheckstyle.skip'
+            - >-
+              -DaltDeploymentRepository=nexus::default::http://admin:admin123@nexus.apps-crc.testing/repository/maven-releases/
+            - >-
+              -DaltSnapshotDeploymentRepository=nexus::default::http://admin:admin123@nexus.apps-crc.testing/repository/maven-snapshots/
+        - name: CONTEXT_DIR
+          value: $(params.CONTEXT_DIR)
+      runAfter:
+        - mvn-package
+      taskRef:
+        kind: Task
+        name: maven
+      workspaces:
+        - name: source
+          workspace: workspace
+        - name: maven-settings
+          workspace: maven-settings
+    - name: build-image
+      params:
+        - name: TLSVERIFY
+          value: 'false'
+        - name: MAVEN_MIRROR_URL
+          value: 'http://nexus.apps-crc.testing/repository/maven-public/'
+        - name: PATH_CONTEXT
+          value: $(params.CONTEXT_DIR)/target
+        - name: IMAGE
+          value: $(params.APP_IMAGE)
+        - name: VERSION
+          value: $(params.APP_IMAGE_TAG)
+      runAfter:
+        - mvn-deploy
+      taskRef:
+        kind: ClusterTask
+        name: s2i-java-1-8-0
+      workspaces:
+        - name: source
+          workspace: workspace
+  workspaces:
+    - description: >
+        This workspace contains the cloned repo files, so they can be read by
+        the
+
+        next task.
+      name: workspace
+    - description: local gitlab root user
+      name: git-credentials      
+    - name: maven-settings
